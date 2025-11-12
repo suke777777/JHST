@@ -1,0 +1,103 @@
+大変お疲れ様でした。何度も手順で混乱させてしまい、申し訳ありませんでした。
+これまでの作業内容をすべて整理し、明日すぐに再開できるよう、現在の進捗状況と次のアクションをまとめたプロンプトを作成します。
+________________________________________
+📝 最終進捗サマリー（再開用プロンプト）
+現在の目標: Excel (VBA) の入力データに基づき、Apps Script (GAS) 経由で Colab の高精度意味検索エンジンを起動し、スプレッドシートに推奨コメントを自動で書き込むシステムを構築する。
+項目	ステータス	詳細
+作業制約	確定	Colab、Google Drive、GitHubのみアクセス可。（GCP、ngrok.comはアクセス不可）
+訓練データ	準備完了	training_data.csvが**JASDF_API**フォルダに配置済み。
+APIファイル	準備完了	JASDF_APIフォルダ内に app.py および requirements.txt が作成済み。 (ただし、今回は使用しないルートに変更)
+Apps Script	準備中	スプレッドシート「評価コメント作成」、プロジェクト名「評価コメント」で準備済み。
+Colabコード	最終テスト中	外部サービスに依存せず、スプレッドシートに直接書き込むための最終的なPythonコードをノートブックに貼り付け、**gspread認証**のテストを行う直前で中断。
+🛠️ 次のステップ：Apps ScriptからColabを実行する連携の確立
+「Colab、Drive、GitHubのみ」の制約を満たすため、Apps ScriptがGitHub経由でColabノートブックを実行し、そのノートブックがスプレッドシートに結果を書き込むという、外部サービスを使わない連携ルートに進んでいます。
+________________________________________
+🗓️ 明日再開用のプロンプト
+明日、作業を再開する際は、このプロンプトをそのまま私に送ってください。
+おはよう。昨日の作業を再開します。
+現在の進捗は、「Apps ScriptとGitHub経由でColabを実行する、外部サービス不要の代替ルート」の、Colab側の最終コードテスト直前で中断しています。
+
+以下のコードをColabで実行し、Googleアカウントの認証（gspread認証）と、スプレッドシートのF1セルへの書き込みが成功するかを確認する手順から再開します。
+
+**【Colabで実行するコード】**
+import pandas as pd
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import gspread # スプレッドシートへの書き込み用
+import time
+
+# --- 1. 定数・初期設定 ---
+# ⚠️ ここをあなたの環境に合わせて修正してください
+SPREADSHEET_NAME = '評価コメント作成' 
+TARGET_SHEET = '検索入力シート' # VBAから入力が行われるシート名
+TRAINING_DATA_PATH = '/content/drive/MyDrive/JASDF_API/training_data.csv'
+
+# モデルのロード (以前成功した軽量モデル)
+EMBEDDING_MODEL = SentenceTransformer('cl-tohoku/bert-base-japanese-whole-word-masking') 
+
+# --- 2. データの準備とエンベディング生成 ---
+def load_and_embed_data(file_path):
+    try:
+        df_train = pd.read_csv(file_path, encoding='cp932', sep=',',
+            usecols=['階級', '目標（50～100文字）', '自己申告（50～100文字）', '上司コメント（50～100文字）'])
+        df_train.columns = ['Rank', 'Goal', 'SelfReport', 'SupervisorComment']
+        df_train['CombinedText'] = df_train['Goal'].astype(str) + " [SEP] " + df_train['SelfReport'].astype(str)
+        embeddings = EMBEDDING_MODEL.encode(df_train['CombinedText'].tolist(), convert_to_tensor=True)
+        return df_train, embeddings.cpu().numpy()
+    except Exception as e:
+        print(f"データ処理エラー: {e}")
+        return None, None
+        
+df_train, train_embeddings = load_and_embed_data(TRAINING_DATA_PATH)
+
+# --- 3. 検索ロジック ---
+def find_best_match_comment(input_goal, input_self_report):
+    if df_train is None:
+        return "ERROR: Training data not loaded.", 0.0
+    new_combined_text = str(input_goal) + " [SEP] " + str(input_self_report)
+    new_embedding = EMBEDDING_MODEL.encode(new_combined_text, convert_to_tensor=True).cpu().numpy().reshape(1, -1)
+    similarities = cosine_similarity(new_embedding, train_embeddings)[0]
+    best_match_index = np.argmax(similarities)
+    best_comment = df_train.iloc[best_match_index]['SupervisorComment']
+    return best_comment, similarities[best_match_index]
+
+
+# --- 4. メイン処理 (Apps Scriptから実行される想定) ---
+def main_search_and_write():
+    if df_train is None:
+        print("検索スキップ: 訓練データなし")
+        return "検索スキップ: 訓練データなし", 0.0
+
+    print("--- gspread認証 ---")
+    from google.colab import auth
+    auth.authenticate_user()
+    
+    gc = gspread.authorize(gspread.get_config_dir())
+    spreadsheet = gc.open(SPREADSHEET_NAME) 
+    input_sheet = spreadsheet.worksheet(TARGET_SHEET)
+
+    # スプレッドシートから入力データを読み込み (B1: 目標, E1: 自己申告)
+    input_data = input_sheet.get('B1:E1', value_render_option='UNFORMATTED_VALUE')[0]
+    input_goal = input_data[0] 
+    input_self_report = input_data[3]
+
+    print(f"入力データ: 目標='{input_goal}', 自己申告='{input_self_report}'")
+
+    # 検索実行
+    comment, similarity_score = find_best_match_comment(input_goal, input_self_report)
+
+    # 結果をスプレッドシートの F1 セルに出力
+    input_sheet.update('F1', comment) 
+    input_sheet.update('G1', f"類似度: {similarity_score:.4f}")
+    print(f"検索結果をF1に出力完了。類似度: {similarity_score:.4f}")
+    
+    return comment, similarity_score
+
+if __name__ == "__main__":
+    # 単体テストとして実行（スプレッドシートのB1, E1を事前に手動で入力してください）
+    main_search_and_write()
+
+**【次のステップの確認】**
+1. スプレッドシートの**B1セル**にテスト用の「目標」、**E1セル**にテスト用の「自己申告」を入力してください。
+2. 上記のコードをColabで実行し、認証を行い、F1セルにコメントが書き込まれるか確認してください。
