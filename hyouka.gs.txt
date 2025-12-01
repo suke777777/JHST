@@ -1,0 +1,43 @@
+// --- 1. 定数設定 ---
+// ColabノートブックをGitHubに配置し、そのRaw URLを使って実行します。
+// ⚠️ 【重要】ここをあなたの Colab ノートブックの Raw URL に変更してください
+const COLAB_NOTEBOOK_RAW_URL = "YOUR_GITHUB_COLAB_NOTEBOOK_RAW_URL_HERE"; 
+
+// --- 2. VBAからのPOSTリクエストを処理する関数 ---
+function doPost(e) {
+  try {
+    // VBAから送られたJSONデータをパース（今回はデータを使わないが形式維持）
+    const postData = JSON.parse(e.postData.contents);
+    const inputGoal = postData.goal;
+    const inputSelfReport = postData.selfReport;
+
+    // --- 3. Colab ノートブックの実行 (GitHub経由でトリガー) ---
+    // Colabを実行するために、Apps Scriptが一時的に外部URLにアクセスする必要があります
+    const options = {
+      'method': 'get', // 実行トリガーはGETメソッドを使用
+      'muteHttpExceptions': true
+    };
+    
+    // Colab実行サービスのURLを組み立て
+    // Colabは、スプレッドシートの入力セルから直接データを読み込みます
+    const colabExecuteUrl = "https://colab.research.google.com/drive/github/execute?url=" + encodeURIComponent(COLAB_NOTEBOOK_RAW_URL);
+    
+    // Colabを実行。Colabが実行完了後、スプレッドシートに書き込みます。
+    // ※ 実行には時間がかかるため、VBA側は応答を待つ必要があります。
+    UrlFetchApp.fetch(colabExecuteUrl, options);
+
+    // --- 4. VBAに成功応答を返す ---
+    // Colabがスプレッドシートへの書き込みを担当したため、GASは成功を返すだけ
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success", 
+      message: "Colab search triggered and results written to spreadsheet."
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    Logger.log("Apps Script エラー: " + error.toString());
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "error", 
+      message: error.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
